@@ -18,10 +18,10 @@
 package ip
 
 import (
+	"github.com/flannel-io/flannel/pkg/over/ns"
 	"net"
 	"testing"
 
-	"github.com/flannel-io/flannel/pkg/ns"
 	"github.com/vishvananda/netlink"
 )
 
