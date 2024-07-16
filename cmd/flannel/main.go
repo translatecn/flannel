@@ -105,70 +105,6 @@ var (
 	flannelFlags   = flag.NewFlagSet("flannel", flag.ExitOnError)
 )
 
-func init() {
-	flannelFlags.StringVar(&opts.etcdEndpoints, "etcd-endpoints", "http://127.0.0.1:4001,http://127.0.0.1:2379", "a comma-delimited list of etcd endpoints")
-	flannelFlags.StringVar(&opts.etcdPrefix, "etcd-prefix", "/coreos.com/network", "etcd prefix")
-	flannelFlags.StringVar(&opts.etcdKeyfile, "etcd-keyfile", "", "SSL key file used to secure etcd communication")
-	flannelFlags.StringVar(&opts.etcdCertfile, "etcd-certfile", "", "SSL certification file used to secure etcd communication")
-	flannelFlags.StringVar(&opts.etcdCAFile, "etcd-cafile", "", "SSL Certificate Authority file used to secure etcd communication")
-	flannelFlags.StringVar(&opts.etcdUsername, "etcd-username", "", "username for BasicAuth to etcd")
-	flannelFlags.StringVar(&opts.etcdPassword, "etcd-password", "", "password for BasicAuth to etcd")
-	flannelFlags.Var(&opts.iface, "iface", "interface to use (IP or name) for inter-host communication. Can be specified multiple times to check each option in order. Returns the first match found.")
-	flannelFlags.Var(&opts.ifaceRegex, "iface-regex", "regex expression to match the first interface to use (IP or name) for inter-host communication. Can be specified multiple times to check each regex in order. Returns the first match found. Regexes are checked after specific interfaces specified by the iface option have already been checked.")
-	flannelFlags.StringVar(&opts.ifaceCanReach, "iface-can-reach", "", "detect interface to use (IP or name) for inter-host communication based on which will be used for provided IP. This is exactly the interface to use of command 'ip route get <ip-address>'")
-	flannelFlags.StringVar(&opts.subnetFile, "subnet-file", "/run/flannel/subnet.env", "filename where env variables (subnet, MTU, ... ) will be written to")
-	flannelFlags.StringVar(&opts.publicIP, "public-ip", "", "IP accessible by other nodes for inter-host communication")
-	flannelFlags.StringVar(&opts.publicIPv6, "public-ipv6", "", "IPv6 accessible by other nodes for inter-host communication")
-	flannelFlags.IntVar(&opts.subnetLeaseRenewMargin, "subnet-lease-renew-margin", 60, "subnet lease renewal margin, in minutes, ranging from 1 to 1439")
-	flannelFlags.BoolVar(&opts.ipMasq, "ip-masq", false, "setup IP masquerade rule for traffic destined outside of overlay network")
-	flannelFlags.BoolVar(&opts.kubeSubnetMgr, "kube-subnet-mgr", false, "contact the Kubernetes API for subnet assignment instead of etcd.")
-	flannelFlags.StringVar(&opts.kubeApiUrl, "kube-api-url", "", "Kubernetes API server URL. Does not need to be specified if flannel is running in a pod.")
-	flannelFlags.StringVar(&opts.kubeAnnotationPrefix, "kube-annotation-prefix", "flannel.alpha.coreos.com", `Kubernetes annotation prefix. Can contain single slash "/", otherwise it will be appended at the end.`)
-	flannelFlags.StringVar(&opts.kubeConfigFile, "kubeconfig-file", "", "kubeconfig file location. Does not need to be specified if flannel is running in a pod.")
-	flannelFlags.BoolVar(&opts.version, "version", false, "print version and exit")
-	flannelFlags.StringVar(&opts.healthzIP, "healthz-ip", "0.0.0.0", "the IP address for healthz server to listen")
-	flannelFlags.IntVar(&opts.healthzPort, "healthz-port", 0, "the port for healthz server to listen(0 to disable)")
-	flannelFlags.IntVar(&opts.iptablesResyncSeconds, "iptables-resync", 5, "resync period for iptables rules, in seconds")
-	flannelFlags.BoolVar(&opts.iptablesForwardRules, "iptables-forward-rules", true, "add default accept rules to FORWARD chain in iptables")
-	flannelFlags.StringVar(&opts.netConfPath, "net-config-path", "/etc/kube-flannel/net-conf.json", "path to the network configuration file")
-	flannelFlags.BoolVar(&opts.setNodeNetworkUnavailable, "set-node-network-unavailable", true, "set NodeNetworkUnavailable after ready")
-
-	log.InitFlags(nil)
-
-	// klog will log to tmp files by default. override so all entries
-	// can flow into journald (if running under systemd)
-	err := flag.Set("logtostderr", "true")
-	if err != nil {
-		log.Error("Can't set the logtostderr flag", err)
-		os.Exit(1)
-	}
-
-	// Only copy the non file logging options from klog
-	copyFlag("v")
-	copyFlag("vmodule")
-	copyFlag("log_backtrace_at")
-
-	// Define the usage function
-	flannelFlags.Usage = usage
-
-	// now parse command line args
-	err = flannelFlags.Parse(os.Args[1:])
-	if err != nil {
-		log.Error("Can't parse flannel flags", err)
-		os.Exit(1)
-	}
-}
-
-func copyFlag(name string) {
-	flannelFlags.Var(flag.Lookup(name).Value, flag.Lookup(name).Name, flag.Lookup(name).Usage)
-}
-
-func usage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s [OPTION]...\n", os.Args[0])
-	flannelFlags.PrintDefaults()
-	os.Exit(0)
-}
-
 func newSubnetManager(ctx context.Context) (subnet.Manager, error) {
 	if opts.kubeSubnetMgr {
 		return kube.NewSubnetManager(ctx,
@@ -574,5 +510,72 @@ func newTrafficManager(useNftables bool) trafficmngr.TrafficManager {
 		return &nftables.NFTablesManager{}
 	} else {
 		return &iptables.IPTablesManager{}
+	}
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, "Usage: %s [OPTION]...\n", os.Args[0])
+	flannelFlags.PrintDefaults()
+	os.Exit(0)
+}
+
+func copyFlag(name string) {
+	flannelFlags.Var(flag.Lookup(name).Value, flag.Lookup(name).Name, flag.Lookup(name).Usage)
+}
+
+func init() {
+	flannelFlags.BoolVar(&opts.ipMasq, "ip-masq", true, "为 overlay 网络之外的目标流量设置IP伪装规则。")
+	flannelFlags.BoolVar(&opts.kubeSubnetMgr, "kube-subnet-mgr", true, "请联系Kubernetes API来分配子网，而不是etcd。")
+	flannelFlags.BoolVar(&opts.setNodeNetworkUnavailable, "set-node-network-unavailable", true, "set NodeNetworkUnavailable after ready")
+
+	flannelFlags.StringVar(&opts.etcdEndpoints, "etcd-endpoints", "http://127.0.0.1:4001,http://127.0.0.1:2379", "以逗号分隔的etcd端点列表")
+	flannelFlags.StringVar(&opts.etcdPrefix, "etcd-prefix", "/coreos.com/network", "etcd prefix")
+	flannelFlags.StringVar(&opts.etcdKeyfile, "etcd-keyfile", "", "SSL key file used to secure etcd communication")
+	flannelFlags.StringVar(&opts.etcdCertfile, "etcd-certfile", "", "SSL certification file used to secure etcd communication")
+	flannelFlags.StringVar(&opts.etcdCAFile, "etcd-cafile", "", "SSL Certificate Authority file used to secure etcd communication")
+	flannelFlags.StringVar(&opts.etcdUsername, "etcd-username", "", "username for BasicAuth to etcd")
+	flannelFlags.StringVar(&opts.etcdPassword, "etcd-password", "", "password for BasicAuth to etcd")
+
+	flannelFlags.Var(&opts.iface, "iface", "用于主机间通信的接口(IP或名称)。可以指定多次，以按顺序检查每个选项。返回找到的第一个匹配项。")
+	flannelFlags.Var(&opts.ifaceRegex, "iface-regex", "regex表达式匹配主机间通信使用的第一个接口(IP或名称)。可以指定多次以按顺序检查每个正则表达式。返回找到的第一个匹配项。在已经检查了iface选项指定的特定接口之后检查正则表达式。")
+	flannelFlags.StringVar(&opts.ifaceCanReach, "iface-can-reach", "", "检测用于主机间通信的接口(IP或名称)，该接口将用于提供的IP。这正是使用命令“ip route get <ip-address>”的接口。")
+	flannelFlags.StringVar(&opts.subnetFile, "subnet-file", "/run/flannel/subnet.env", "filename where env variables (subnet, MTU, ... ) will be written to")
+	flannelFlags.StringVar(&opts.publicIP, "public-ip", "", "其他节点可访问的IP，用于主机间通信")
+	flannelFlags.StringVar(&opts.publicIPv6, "public-ipv6", "", "IPv6 accessible by other nodes for inter-host communication")
+	flannelFlags.IntVar(&opts.subnetLeaseRenewMargin, "subnet-lease-renew-margin", 60, "子网续租余量，单位为分钟，取值范围为1 ~ 1439")
+
+	flannelFlags.StringVar(&opts.kubeApiUrl, "kube-api-url", "", "Kubernetes API服务器URL。如果法兰绒在吊舱中运行，则不需要指定。")
+	flannelFlags.StringVar(&opts.kubeAnnotationPrefix, "kube-annotation-prefix", "flannel.alpha.coreos.com", `Kubernetes注释前缀。可以包含单个斜杠"/"，否则它将被附加在末尾。`)
+	flannelFlags.StringVar(&opts.kubeConfigFile, "kubeconfig-file", "", "kubeconfig file location. Does not need to be specified if flannel is running in a pod.")
+	flannelFlags.BoolVar(&opts.version, "version", false, "print version and exit")
+	flannelFlags.StringVar(&opts.healthzIP, "healthz-ip", "0.0.0.0", "the IP address for healthz server to listen")
+	flannelFlags.IntVar(&opts.healthzPort, "healthz-port", 0, "the port for healthz server to listen(0 to disable)")
+	flannelFlags.IntVar(&opts.iptablesResyncSeconds, "iptables-resync", 5, "iptables规则的重新同步周期，单位为秒")
+	flannelFlags.BoolVar(&opts.iptablesForwardRules, "iptables-forward-rules", true, "在iptables的FORWARD链中添加默认的接受规则")
+	flannelFlags.StringVar(&opts.netConfPath, "net-config-path", "/etc/kube-flannel/net-conf.json", "path to the network configuration file")
+
+	log.InitFlags(nil)
+
+	// klog will log to tmp files by default. override so all entries
+	// can flow into journald (if running under systemd)
+	err := flag.Set("logtostderr", "true")
+	if err != nil {
+		log.Error("Can't set the logtostderr flag", err)
+		os.Exit(1)
+	}
+
+	// Only copy the non file logging options from klog
+	copyFlag("v")
+	copyFlag("vmodule")
+	copyFlag("log_backtrace_at")
+
+	// Define the usage function
+	flannelFlags.Usage = usage
+
+	// now parse command line args
+	err = flannelFlags.Parse(os.Args[1:])
+	if err != nil {
+		log.Error("Can't parse flannel flags", err)
+		os.Exit(1)
 	}
 }
