@@ -121,14 +121,6 @@ func (n IP4Net) StringSep(octetSep, prefixSep string) string {
 	return fmt.Sprintf("%s%s%d", n.IP.StringSep(octetSep), prefixSep, n.PrefixLen)
 }
 
-func MapIP4ToString(nws []IP4Net) []string {
-	res := make([]string, len(nws))
-	for i := range nws {
-		res[i] = nws[i].String()
-	}
-	return res
-}
-
 func (n IP4Net) Network() IP4Net {
 	return IP4Net{
 		n.IP & IP4(n.Mask()),

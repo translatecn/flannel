@@ -50,7 +50,7 @@ var (
 )
 
 type NetConf struct {
-	types.NetConf
+	types.NetConf // 规范
 
 	// IPAM field "replaces" that of types.NetConf which is incomplete
 	IPAM          map[string]interface{} `json:"ipam,omitempty"`
@@ -70,7 +70,7 @@ type subnetEnv struct {
 }
 
 func (se *subnetEnv) missing() string {
-	m := []string{}
+	var m []string
 
 	if len(se.nws) == 0 && len(se.ip6Nws) == 0 {
 		m = append(m, []string{"FLANNEL_NETWORK", "FLANNEL_IPV6_NETWORK"}...)
@@ -87,20 +87,8 @@ func (se *subnetEnv) missing() string {
 	return strings.Join(m, ", ")
 }
 
-func loadFlannelNetConf(bytes []byte) (*NetConf, error) {
-	n := &NetConf{
-		SubnetFile: defaultSubnetFile,
-		DataDir:    defaultDataDir,
-	}
-	if err := json.Unmarshal(bytes, n); err != nil {
-		return nil, fmt.Errorf("failed to load netconf: %v", err)
-	}
-
-	return n, nil
-}
-
 func getIPAMRoutes(n *NetConf) ([]types.Route, error) {
-	rtes := []types.Route{}
+	var rtes []types.Route
 
 	if n.IPAM != nil && hasKey(n.IPAM, "routes") {
 		buf, _ := json.Marshal(n.IPAM["routes"])
@@ -126,6 +114,89 @@ func isSubnetAlreadyPresent(nws []*net.IPNet, nw *net.IPNet) bool {
 		}
 	}
 	return false
+}
+
+func consumeScratchNetConf(containerID, dataDir string) (func(error), []byte, error) {
+	path := filepath.Join(dataDir, containerID)
+
+	// cleanup will do clean job when no error happens in consuming/using process
+	cleanup := func(err error) {
+		if err == nil {
+			// Ignore errors when removing - Per spec safe to continue during DEL
+			_ = os.Remove(path)
+		}
+	}
+	netConfBytes, err := os.ReadFile(path)
+
+	return cleanup, netConfBytes, err
+}
+
+func delegateAdd(cid, dataDir string, netconf map[string]interface{}) error {
+	netconfBytes, err := json.Marshal(netconf)
+	fmt.Fprintf(os.Stderr, "delegateAdd: netconf sent to delegate plugin:\n")
+	os.Stderr.Write(netconfBytes)
+	if err != nil {
+		return fmt.Errorf("error serializing delegate netconf: %v", err)
+	}
+
+	// save the rendered netconf for cmdDel
+	if err = saveScratchNetConf(cid, dataDir, netconfBytes); err != nil {
+		return err
+	}
+
+	result, err := invoke.DelegateAdd(context.TODO(), netconf["type"].(string), netconfBytes, nil)
+	if err != nil {
+		err = fmt.Errorf("failed to delegate add: %w", err)
+		return err
+	}
+	return result.Print()
+}
+
+func hasKey(m map[string]interface{}, k string) bool {
+	_, ok := m[k]
+	return ok
+}
+
+func isString(i interface{}) bool {
+	_, ok := i.(string)
+	return ok
+}
+
+func cmdDel(args *skel.CmdArgs) error {
+	nc, err := loadFlannelNetConf(args.StdinData)
+	if err != nil {
+		return err
+	}
+
+	if nc.RuntimeConfig != nil {
+		if nc.Delegate == nil {
+			nc.Delegate = make(map[string]interface{})
+		}
+		nc.Delegate["runtimeConfig"] = nc.RuntimeConfig
+	}
+
+	return doCmdDel(args, nc)
+}
+
+func main() {
+	fullVer := fmt.Sprintf("CNI Plugin %s version %s (%s/%s) commit %s built on %s", Program, Version, runtime.GOOS, runtime.GOARCH, Commit, buildDate)
+	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, cni.All, fullVer)
+}
+
+func cmdCheck(args *skel.CmdArgs) error {
+	// TODO: implement
+	return nil
+}
+func loadFlannelNetConf(bytes []byte) (*NetConf, error) {
+	n := &NetConf{
+		SubnetFile: defaultSubnetFile,
+		DataDir:    defaultDataDir,
+	}
+	if err := json.Unmarshal(bytes, n); err != nil {
+		return nil, fmt.Errorf("failed to load netconf: %v", err)
+	}
+
+	return n, nil
 }
 
 func loadFlannelSubnetEnv(fn string) (*subnetEnv, error) {
@@ -203,81 +274,12 @@ func loadFlannelSubnetEnv(fn string) (*subnetEnv, error) {
 	return se, nil
 }
 
-func saveScratchNetConf(containerID, dataDir string, netconf []byte) error {
-	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		return err
-	}
-	path := filepath.Join(dataDir, containerID)
-	return writeAndSyncFile(path, netconf, 0600)
-}
-
-// WriteAndSyncFile behaves just like ioutil.WriteFile in the standard library,
-// but calls Sync before closing the file. WriteAndSyncFile guarantees the data
-// is synced if there is no error returned.
-func writeAndSyncFile(filename string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	n, err := f.Write(data)
-	if err == nil && n < len(data) {
-		err = io.ErrShortWrite
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if err1 := f.Close(); err == nil {
-		err = err1
-	}
-	return err
-}
-
-func consumeScratchNetConf(containerID, dataDir string) (func(error), []byte, error) {
-	path := filepath.Join(dataDir, containerID)
-
-	// cleanup will do clean job when no error happens in consuming/using process
-	cleanup := func(err error) {
-		if err == nil {
-			// Ignore errors when removing - Per spec safe to continue during DEL
-			_ = os.Remove(path)
-		}
-	}
-	netConfBytes, err := os.ReadFile(path)
-
-	return cleanup, netConfBytes, err
-}
-
-func delegateAdd(cid, dataDir string, netconf map[string]interface{}) error {
-	netconfBytes, err := json.Marshal(netconf)
-	fmt.Fprintf(os.Stderr, "delegateAdd: netconf sent to delegate plugin:\n")
-	os.Stderr.Write(netconfBytes)
-	if err != nil {
-		return fmt.Errorf("error serializing delegate netconf: %v", err)
-	}
-
-	// save the rendered netconf for cmdDel
-	if err = saveScratchNetConf(cid, dataDir, netconfBytes); err != nil {
-		return err
-	}
-
-	result, err := invoke.DelegateAdd(context.TODO(), netconf["type"].(string), netconfBytes, nil)
-	if err != nil {
-		err = fmt.Errorf("failed to delegate add: %w", err)
-		return err
-	}
-	return result.Print()
-}
-
-func hasKey(m map[string]interface{}, k string) bool {
-	_, ok := m[k]
-	return ok
-}
-
-func isString(i interface{}) bool {
-	_, ok := i.(string)
-	return ok
-}
-
+//	{
+//	   "name": "cni-flannel",
+//	   "type": "flannel",
+//	   "subnetFile": "/tmp/subnet.env3610017212",
+//	   "dataDir": "/tmp/dataDir4053207789"
+//	}
 func cmdAdd(args *skel.CmdArgs) error {
 	n, err := loadFlannelNetConf(args.StdinData)
 	if err != nil {
@@ -309,28 +311,31 @@ func cmdAdd(args *skel.CmdArgs) error {
 	return doCmdAdd(args, n, fenv)
 }
 
-func cmdDel(args *skel.CmdArgs) error {
-	nc, err := loadFlannelNetConf(args.StdinData)
+func saveScratchNetConf(containerID, dataDir string, netconf []byte) error {
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return err
+	}
+	path := filepath.Join(dataDir, containerID)
+	return writeAndSyncFile(path, netconf, 0600)
+}
+
+// WriteAndSyncFile behaves just like ioutil.WriteFile in the standard library,
+// but calls Sync before closing the file. WriteAndSyncFile guarantees the data
+// is synced if there is no error returned.
+func writeAndSyncFile(filename string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
-
-	if nc.RuntimeConfig != nil {
-		if nc.Delegate == nil {
-			nc.Delegate = make(map[string]interface{})
-		}
-		nc.Delegate["runtimeConfig"] = nc.RuntimeConfig
+	n, err := f.Write(data)
+	if err == nil && n < len(data) {
+		err = io.ErrShortWrite
 	}
-
-	return doCmdDel(args, nc)
-}
-
-func main() {
-	fullVer := fmt.Sprintf("CNI Plugin %s version %s (%s/%s) commit %s built on %s", Program, Version, runtime.GOOS, runtime.GOARCH, Commit, buildDate)
-	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, cni.All, fullVer)
-}
-
-func cmdCheck(args *skel.CmdArgs) error {
-	// TODO: implement
-	return nil
+	if err == nil {
+		err = f.Sync()
+	}
+	if err1 := f.Close(); err == nil {
+		err = err1
+	}
+	return err
 }

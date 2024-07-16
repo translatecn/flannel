@@ -1,0 +1,114 @@
+// Copyright 2015 flannel authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package subnet
+
+import (
+	"fmt"
+	"github.com/flannel-io/flannel/pkg/ip"
+	"github.com/flannel-io/flannel/pkg/over/lease"
+	"golang.org/x/net/context"
+	log "k8s.io/klog/v2"
+	"os"
+	"path/filepath"
+	"regexp"
+)
+
+var (
+	subnetRegex = regexp.MustCompile(`(\d+\.\d+.\d+.\d+)-(\d+)(?:&([a-f\d:]+)-(\d+))?$`)
+)
+
+// WatchLeases performs a long term watch of the given network's subnet leases
+// and communicates addition/deletion events on receiver channel. It takes care
+// of handling "fall-behind" logic where the history window has advanced too far
+// and it needs to diff the latest snapshot with its saved state and generate events
+func WatchLeases(ctx context.Context, sm *KubeSubnetManager, ownLease *lease.Lease, receiver chan []lease.Event) {
+
+	// LeaseWatcher is initiated with the Lease of the local node
+	lw := &lease.LeaseWatcher{
+		OwnLease: ownLease,
+	}
+
+	leaseWatchChan := make(chan []lease.LeaseWatchResult)
+	go func() {
+		err := sm.WatchLeases(ctx, leaseWatchChan)
+		if err != nil {
+			log.Errorf("could not watch leases: %s", err)
+			return
+		}
+	}()
+	for watchResults := range leaseWatchChan {
+		for _, wr := range watchResults {
+			var batch []lease.Event
+
+			if len(wr.Events) > 0 {
+				batch = lw.Update(wr.Events)
+			} else {
+				batch = lw.Reset(wr.Snapshot)
+			}
+
+			for i := range batch {
+				log.Infof("Batch elem [%d] is { %#v }", i, batch[i])
+			}
+			if len(batch) > 0 {
+				receiver <- batch
+			}
+		}
+	}
+
+	close(receiver)
+}
+
+// WatchLease performs a long term watch of the given network's subnet lease
+// and communicates addition/deletion events on receiver channel. It takes care
+// of handling "fall-behind" logic where the history window has advanced too far
+// and it needs to diff the latest snapshot with its saved state and generate events
+
+func WriteSubnetFile(path string, config *Config, ipMasq bool, sn ip.IP4Net, ipv6sn ip.IP6Net, mtu int) error {
+	dir, name := filepath.Split(path)
+	err := os.MkdirAll(dir, 0755)
+	if err != nil {
+		return err
+	}
+	tempFile := filepath.Join(dir, "."+name)
+	f, err := os.Create(tempFile)
+	if err != nil {
+		return err
+	}
+	if config.EnableIPv4 {
+		fmt.Fprintf(f, "FLANNEL_NETWORK=%s\n", config.Network)
+		// Write out the first usable IP by incrementing sn.IP by one
+		sn.IncrementIP()
+
+		fmt.Fprintf(f, "FLANNEL_SUBNET=%s\n", sn)
+	}
+	if config.EnableIPv6 {
+		fmt.Fprintf(f, "FLANNEL_IPV6_NETWORK=%s\n", config.IPv6Network)
+		// Write out the first usable IP by incrementing ip6Sn.IP by one
+		ipv6sn.IncrementIP()
+		fmt.Fprintf(f, "FLANNEL_IPV6_SUBNET=%s\n", ipv6sn)
+	}
+
+	fmt.Fprintf(f, "FLANNEL_MTU=%d\n", mtu)
+	_, err = fmt.Fprintf(f, "FLANNEL_IPMASQ=%v\n", ipMasq)
+	f.Close()
+	if err != nil {
+		return err
+	}
+
+	// rename(2) the temporary file to the desired location so that it becomes
+	// atomically visible with the contents
+	return os.Rename(tempFile, path)
+	// TODO - is this safe? What if it's not on the same FS?
+}

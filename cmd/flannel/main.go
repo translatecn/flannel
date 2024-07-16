@@ -18,6 +18,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/flannel-io/flannel/pkg/over/ipmatch"
+	subnet2 "github.com/flannel-io/flannel/pkg/over/subnet"
+	"github.com/flannel-io/flannel/pkg/over/trafficmngr"
+	"github.com/flannel-io/flannel/pkg/over/trafficmngr/iptables"
+	"github.com/flannel-io/flannel/pkg/over/trafficmngr/nftables"
+	"github.com/flannel-io/flannel/pkg/over/version"
 	"math/big"
 	"net"
 	"net/http"
@@ -31,14 +37,6 @@ import (
 
 	"github.com/coreos/pkg/flagutil"
 	"github.com/flannel-io/flannel/pkg/ip"
-	"github.com/flannel-io/flannel/pkg/ipmatch"
-	"github.com/flannel-io/flannel/pkg/subnet"
-	etcd "github.com/flannel-io/flannel/pkg/subnet/etcd"
-	"github.com/flannel-io/flannel/pkg/subnet/kube"
-	"github.com/flannel-io/flannel/pkg/trafficmngr"
-	"github.com/flannel-io/flannel/pkg/trafficmngr/iptables"
-	"github.com/flannel-io/flannel/pkg/trafficmngr/nftables"
-	"github.com/flannel-io/flannel/pkg/version"
 	"golang.org/x/net/context"
 	log "k8s.io/klog/v2"
 
@@ -52,10 +50,8 @@ import (
 	_ "github.com/flannel-io/flannel/pkg/backend/hostgw"
 	_ "github.com/flannel-io/flannel/pkg/backend/ipip"
 	_ "github.com/flannel-io/flannel/pkg/backend/ipsec"
-	_ "github.com/flannel-io/flannel/pkg/backend/tencentvpc"
+	_ "github.com/flannel-io/flannel/pkg/backend/over/vxlan"
 	_ "github.com/flannel-io/flannel/pkg/backend/udp"
-	_ "github.com/flannel-io/flannel/pkg/backend/vxlan"
-	_ "github.com/flannel-io/flannel/pkg/backend/wireguard"
 )
 
 type flagSlice []string
@@ -70,15 +66,7 @@ func (t *flagSlice) Set(val string) error {
 }
 
 type CmdLineOpts struct {
-	etcdEndpoints             string
-	etcdPrefix                string
-	etcdKeyfile               string
-	etcdCertfile              string
-	etcdCAFile                string
-	etcdUsername              string
-	etcdPassword              string
 	version                   bool
-	kubeSubnetMgr             bool
 	kubeApiUrl                string
 	kubeAnnotationPrefix      string
 	kubeConfigFile            string
@@ -105,34 +93,8 @@ var (
 	flannelFlags   = flag.NewFlagSet("flannel", flag.ExitOnError)
 )
 
-func newSubnetManager(ctx context.Context) (subnet.Manager, error) {
-	if opts.kubeSubnetMgr {
-		return kube.NewSubnetManager(ctx,
-			opts.kubeApiUrl,
-			opts.kubeConfigFile,
-			opts.kubeAnnotationPrefix,
-			opts.netConfPath,
-			opts.setNodeNetworkUnavailable)
-	}
-
-	cfg := &etcd.EtcdConfig{
-		Endpoints: strings.Split(opts.etcdEndpoints, ","),
-		Keyfile:   opts.etcdKeyfile,
-		Certfile:  opts.etcdCertfile,
-		CAFile:    opts.etcdCAFile,
-		Prefix:    opts.etcdPrefix,
-		Username:  opts.etcdUsername,
-		Password:  opts.etcdPassword,
-	}
-
-	// Attempt to renew the lease for the subnet specified in the subnetFile
-	prevSubnet := ReadCIDRFromSubnetFile(opts.subnetFile, "FLANNEL_SUBNET")
-	prevIPv6Subnet := ReadIP6CIDRFromSubnetFile(opts.subnetFile, "FLANNEL_IPV6_SUBNET")
-
-	return etcd.NewLocalManager(ctx, cfg, prevSubnet, prevIPv6Subnet, opts.subnetLeaseRenewMargin)
-}
-
 func main() {
+	os.Setenv("NODE_NAME", "vm")
 	if opts.version {
 		fmt.Fprintln(os.Stderr, version.Version)
 		os.Exit(0)
@@ -293,7 +255,7 @@ func main() {
 	}
 
 	// Set up ipMasq if needed
-	if opts.ipMasq {
+	if opts.ipMasq { // 为 overlay 网络之外的目标流量设置IP伪装规则。
 		prevNetwork := ReadCIDRFromSubnetFile(opts.subnetFile, "FLANNEL_NETWORK")
 		prevSubnet := ReadCIDRFromSubnetFile(opts.subnetFile, "FLANNEL_SUBNET")
 
@@ -315,9 +277,6 @@ func main() {
 		}
 	}
 
-	// Always enables forwarding rules. This is needed for Docker versions >1.13 (https://docs.docker.com/engine/userguide/networking/default_network/container-communication/#container-communication-between-hosts)
-	// In Docker 1.12 and earlier, the default FORWARD chain policy was ACCEPT.
-	// In Docker 1.13 and later, Docker sets the default policy of the FORWARD chain to DROP.
 	if opts.iptablesForwardRules {
 		trafficMngr.SetupAndEnsureForwardRules(ctx,
 			config.Network,
@@ -361,80 +320,6 @@ func main() {
 	os.Exit(0)
 }
 
-func shutdownHandler(ctx context.Context, sigs chan os.Signal, cancel context.CancelFunc) {
-	// Wait for the context do be Done or for the signal to come in to shutdown.
-	select {
-	case <-ctx.Done():
-		log.Info("Stopping shutdownHandler...")
-	case <-sigs:
-		// Call cancel on the context to close everything down.
-		cancel()
-		log.Info("shutdownHandler sent cancel signal...")
-	}
-
-	// Unregister to get default OS nuke behaviour in case we don't exit cleanly
-	signal.Stop(sigs)
-}
-
-func getConfig(ctx context.Context, sm subnet.Manager) (*subnet.Config, error) {
-	// Retry every second until it succeeds
-	for {
-		config, err := sm.GetNetworkConfig(ctx)
-		if err != nil {
-			log.Errorf("Couldn't fetch network config: %s", err)
-		} else if config == nil {
-			log.Warningf("Couldn't find network config: %s", err)
-		} else {
-			log.Infof("Found network config - Backend type: %s", config.BackendType)
-			return config, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, errCanceled
-		case <-time.After(1 * time.Second):
-			fmt.Println("timed out")
-		}
-	}
-}
-
-func mustRunHealthz(stopChan <-chan struct{}, wg *sync.WaitGroup) {
-	address := net.JoinHostPort(opts.healthzIP, strconv.Itoa(opts.healthzPort))
-	log.Infof("Start healthz server on %s", address)
-
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, err := w.Write([]byte("flanneld is running"))
-		if err != nil {
-			log.Errorf("Handling /healthz error. %v", err)
-			panic(err)
-		}
-	})
-
-	server := &http.Server{Addr: address}
-
-	wg.Add(2)
-	go func() {
-		// when Shutdown is called, ListenAndServe immediately return ErrServerClosed.
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Errorf("Start healthz server error. %v", err)
-			panic(err)
-		}
-		wg.Done()
-	}()
-
-	go func() {
-		// wait to stop
-		<-stopChan
-
-		// create new context with timeout for http server to shutdown gracefully
-		ctx, _ := context.WithTimeout(context.Background(), 3*time.Second)
-		if err := server.Shutdown(ctx); err != nil {
-			log.Errorf("Shutdown healthz server error. %v", err)
-		}
-		wg.Done()
-	}()
-}
-
 func ReadCIDRFromSubnetFile(path string, CIDRKey string) ip.IP4Net {
 	prevCIDRs := ReadCIDRsFromSubnetFile(path, CIDRKey)
 	if len(prevCIDRs) == 0 {
@@ -443,41 +328,6 @@ func ReadCIDRFromSubnetFile(path string, CIDRKey string) ip.IP4Net {
 	} else if len(prevCIDRs) > 1 {
 		log.Errorf("error reading subnet: more than 1 entry found for key: %s in file %s: ", CIDRKey, path)
 		return ip.IP4Net{IP: 0, PrefixLen: 0}
-	} else {
-		return prevCIDRs[0]
-	}
-}
-
-func ReadCIDRsFromSubnetFile(path string, CIDRKey string) []ip.IP4Net {
-	prevCIDRs := make([]ip.IP4Net, 0)
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		prevSubnetVals, err := godotenv.Read(path)
-		if err != nil {
-			log.Errorf("Couldn't fetch previous %s from subnet file at %s: %s", CIDRKey, path, err)
-		} else if prevCIDRString, ok := prevSubnetVals[CIDRKey]; ok {
-			cidrs := strings.Split(prevCIDRString, ",")
-			prevCIDRs = make([]ip.IP4Net, 0)
-			for i := range cidrs {
-				_, cidr, err := net.ParseCIDR(cidrs[i])
-				if err != nil {
-					log.Errorf("Couldn't parse previous %s from subnet file at %s: %s", CIDRKey, path, err)
-				}
-				prevCIDRs = append(prevCIDRs, ip.FromIPNet(cidr))
-			}
-
-		}
-	}
-	return prevCIDRs
-}
-
-func ReadIP6CIDRFromSubnetFile(path string, CIDRKey string) ip.IP6Net {
-	prevCIDRs := ReadIP6CIDRsFromSubnetFile(path, CIDRKey)
-	if len(prevCIDRs) == 0 {
-		log.Warningf("no subnet found for key: %s in file: %s", CIDRKey, path)
-		return ip.IP6Net{IP: (*ip.IP6)(big.NewInt(0)), PrefixLen: 0}
-	} else if len(prevCIDRs) > 1 {
-		log.Errorf("error reading subnet: more than 1 entry found for key: %s in file %s: ", CIDRKey, path)
-		return ip.IP6Net{IP: (*ip.IP6)(big.NewInt(0)), PrefixLen: 0}
 	} else {
 		return prevCIDRs[0]
 	}
@@ -505,14 +355,6 @@ func ReadIP6CIDRsFromSubnetFile(path string, CIDRKey string) []ip.IP6Net {
 	return prevCIDRs
 }
 
-func newTrafficManager(useNftables bool) trafficmngr.TrafficManager {
-	if useNftables {
-		return &nftables.NFTablesManager{}
-	} else {
-		return &iptables.IPTablesManager{}
-	}
-}
-
 func usage() {
 	fmt.Fprintf(os.Stderr, "Usage: %s [OPTION]...\n", os.Args[0])
 	flannelFlags.PrintDefaults()
@@ -525,16 +367,7 @@ func copyFlag(name string) {
 
 func init() {
 	flannelFlags.BoolVar(&opts.ipMasq, "ip-masq", true, "为 overlay 网络之外的目标流量设置IP伪装规则。")
-	flannelFlags.BoolVar(&opts.kubeSubnetMgr, "kube-subnet-mgr", true, "请联系Kubernetes API来分配子网，而不是etcd。")
 	flannelFlags.BoolVar(&opts.setNodeNetworkUnavailable, "set-node-network-unavailable", true, "set NodeNetworkUnavailable after ready")
-
-	flannelFlags.StringVar(&opts.etcdEndpoints, "etcd-endpoints", "http://127.0.0.1:4001,http://127.0.0.1:2379", "以逗号分隔的etcd端点列表")
-	flannelFlags.StringVar(&opts.etcdPrefix, "etcd-prefix", "/coreos.com/network", "etcd prefix")
-	flannelFlags.StringVar(&opts.etcdKeyfile, "etcd-keyfile", "", "SSL key file used to secure etcd communication")
-	flannelFlags.StringVar(&opts.etcdCertfile, "etcd-certfile", "", "SSL certification file used to secure etcd communication")
-	flannelFlags.StringVar(&opts.etcdCAFile, "etcd-cafile", "", "SSL Certificate Authority file used to secure etcd communication")
-	flannelFlags.StringVar(&opts.etcdUsername, "etcd-username", "", "username for BasicAuth to etcd")
-	flannelFlags.StringVar(&opts.etcdPassword, "etcd-password", "", "password for BasicAuth to etcd")
 
 	flannelFlags.Var(&opts.iface, "iface", "用于主机间通信的接口(IP或名称)。可以指定多次，以按顺序检查每个选项。返回找到的第一个匹配项。")
 	flannelFlags.Var(&opts.ifaceRegex, "iface-regex", "regex表达式匹配主机间通信使用的第一个接口(IP或名称)。可以指定多次以按顺序检查每个正则表达式。返回找到的第一个匹配项。在已经检查了iface选项指定的特定接口之后检查正则表达式。")
@@ -577,5 +410,127 @@ func init() {
 	if err != nil {
 		log.Error("Can't parse flannel flags", err)
 		os.Exit(1)
+	}
+}
+func shutdownHandler(ctx context.Context, sigs chan os.Signal, cancel context.CancelFunc) {
+	// Wait for the context do be Done or for the signal to come in to shutdown.
+	select {
+	case <-ctx.Done():
+		log.Info("Stopping shutdownHandler...")
+	case <-sigs:
+		// Call cancel on the context to close everything down.
+		cancel()
+		log.Info("shutdownHandler sent cancel signal...")
+	}
+
+	// Unregister to get default OS nuke behaviour in case we don't exit cleanly
+	signal.Stop(sigs)
+}
+
+func mustRunHealthz(stopChan <-chan struct{}, wg *sync.WaitGroup) {
+	address := net.JoinHostPort(opts.healthzIP, strconv.Itoa(opts.healthzPort))
+	log.Infof("Start healthz server on %s", address)
+
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte("flanneld is running"))
+		if err != nil {
+			log.Errorf("Handling /healthz error. %v", err)
+			panic(err)
+		}
+	})
+
+	server := &http.Server{Addr: address}
+
+	wg.Add(2)
+	go func() {
+		// when Shutdown is called, ListenAndServe immediately return ErrServerClosed.
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("Start healthz server error. %v", err)
+			panic(err)
+		}
+		wg.Done()
+	}()
+
+	go func() {
+		// wait to stop
+		<-stopChan
+
+		// create new context with timeout for http server to shutdown gracefully
+		ctx, _ := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := server.Shutdown(ctx); err != nil {
+			log.Errorf("Shutdown healthz server error. %v", err)
+		}
+		wg.Done()
+	}()
+}
+
+func getConfig(ctx context.Context, sm *subnet2.KubeSubnetManager) (*subnet2.Config, error) {
+	// Retry every second until it succeeds
+	for {
+		config, err := sm.GetNetworkConfig(ctx)
+		if err != nil {
+			log.Errorf("Couldn't fetch network config: %s", err)
+		} else if config == nil {
+			log.Warningf("Couldn't find network config: %s", err)
+		} else {
+			log.Infof("Found network config - Backend type: %s", config.BackendType)
+			return config, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errCanceled
+		case <-time.After(1 * time.Second):
+			fmt.Println("timed out")
+		}
+	}
+}
+func newSubnetManager(ctx context.Context) (*subnet2.KubeSubnetManager, error) {
+	return subnet2.NewSubnetManager(ctx,
+		opts.kubeApiUrl,
+		opts.kubeConfigFile,
+		opts.kubeAnnotationPrefix,
+		opts.netConfPath,
+		opts.setNodeNetworkUnavailable)
+}
+
+func newTrafficManager(useNftables bool) trafficmngr.TrafficManager {
+	if useNftables {
+		return &nftables.NFTablesManager{}
+	} else {
+		return &iptables.IPTablesManager{}
+	}
+}
+func ReadCIDRsFromSubnetFile(path string, CIDRKey string) []ip.IP4Net {
+	prevCIDRs := make([]ip.IP4Net, 0)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		prevSubnetVals, err := godotenv.Read(path)
+		if err != nil {
+			log.Errorf("Couldn't fetch previous %s from subnet file at %s: %s", CIDRKey, path, err)
+		} else if prevCIDRString, ok := prevSubnetVals[CIDRKey]; ok {
+			cidrs := strings.Split(prevCIDRString, ",")
+			prevCIDRs = make([]ip.IP4Net, 0)
+			for i := range cidrs {
+				_, cidr, err := net.ParseCIDR(cidrs[i])
+				if err != nil {
+					log.Errorf("Couldn't parse previous %s from subnet file at %s: %s", CIDRKey, path, err)
+				}
+				prevCIDRs = append(prevCIDRs, ip.FromIPNet(cidr))
+			}
+
+		}
+	}
+	return prevCIDRs
+}
+func ReadIP6CIDRFromSubnetFile(path string, CIDRKey string) ip.IP6Net {
+	prevCIDRs := ReadIP6CIDRsFromSubnetFile(path, CIDRKey)
+	if len(prevCIDRs) == 0 {
+		log.Warningf("no subnet found for key: %s in file: %s", CIDRKey, path)
+		return ip.IP6Net{IP: (*ip.IP6)(big.NewInt(0)), PrefixLen: 0}
+	} else if len(prevCIDRs) > 1 {
+		log.Errorf("error reading subnet: more than 1 entry found for key: %s in file %s: ", CIDRKey, path)
+		return ip.IP6Net{IP: (*ip.IP6)(big.NewInt(0)), PrefixLen: 0}
+	} else {
+		return prevCIDRs[0]
 	}
 }

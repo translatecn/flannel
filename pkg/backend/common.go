@@ -15,11 +15,11 @@
 package backend
 
 import (
+	"github.com/flannel-io/flannel/pkg/over/lease"
+	subnet2 "github.com/flannel-io/flannel/pkg/over/subnet"
 	"net"
 	"sync"
 
-	"github.com/flannel-io/flannel/pkg/lease"
-	"github.com/flannel-io/flannel/pkg/subnet"
 	"golang.org/x/net/context"
 )
 
@@ -37,7 +37,7 @@ type ExternalInterface struct {
 // needed.
 type Backend interface {
 	// Called when the backend should create or begin managing a new network
-	RegisterNetwork(ctx context.Context, wg *sync.WaitGroup, config *subnet.Config) (Network, error)
+	RegisterNetwork(ctx context.Context, wg *sync.WaitGroup, config *subnet2.Config) (Network, error)
 }
 
 type Network interface {
@@ -46,4 +46,4 @@ type Network interface {
 	Run(ctx context.Context)
 }
 
-type BackendCtor func(sm subnet.Manager, ei *ExternalInterface) (Backend, error)
+type BackendCtor func(sm *subnet2.KubeSubnetManager, ei *ExternalInterface) (Backend, error)

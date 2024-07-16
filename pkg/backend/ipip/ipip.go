@@ -1,32 +1,15 @@
-//go:build !windows
-// +build !windows
-
-// Copyright 2017 flannel authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package ipip
 
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/flannel-io/flannel/pkg/over/lease"
+	subnet2 "github.com/flannel-io/flannel/pkg/over/subnet"
 	"sync"
 	"syscall"
 
 	"github.com/flannel-io/flannel/pkg/backend"
 	"github.com/flannel-io/flannel/pkg/ip"
-	"github.com/flannel-io/flannel/pkg/lease"
-	"github.com/flannel-io/flannel/pkg/subnet"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/context"
 	log "k8s.io/klog/v2"
@@ -42,11 +25,11 @@ func init() {
 }
 
 type IPIPBackend struct {
-	sm       subnet.Manager
+	sm       *subnet2.KubeSubnetManager
 	extIface *backend.ExternalInterface
 }
 
-func New(sm subnet.Manager, extIface *backend.ExternalInterface) (backend.Backend, error) {
+func New(sm *subnet2.KubeSubnetManager, extIface *backend.ExternalInterface) (backend.Backend, error) {
 	be := &IPIPBackend{
 		sm:       sm,
 		extIface: extIface,
@@ -54,7 +37,7 @@ func New(sm subnet.Manager, extIface *backend.ExternalInterface) (backend.Backen
 	return be, nil
 }
 
-func (be *IPIPBackend) RegisterNetwork(ctx context.Context, wg *sync.WaitGroup, config *subnet.Config) (backend.Network, error) {
+func (be *IPIPBackend) RegisterNetwork(ctx context.Context, wg *sync.WaitGroup, config *subnet2.Config) (backend.Network, error) {
 	cfg := struct {
 		DirectRouting bool
 	}{}

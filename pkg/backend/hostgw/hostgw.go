@@ -1,30 +1,13 @@
-//go:build !windows && !windows
-// +build !windows,!windows
-
-// Copyright 2015 flannel authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package hostgw
 
 import (
 	"fmt"
+	"github.com/flannel-io/flannel/pkg/over/lease"
+	subnet2 "github.com/flannel-io/flannel/pkg/over/subnet"
 	"sync"
 
 	"github.com/flannel-io/flannel/pkg/backend"
 	"github.com/flannel-io/flannel/pkg/ip"
-	"github.com/flannel-io/flannel/pkg/lease"
-	"github.com/flannel-io/flannel/pkg/subnet"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/context"
 )
@@ -34,11 +17,11 @@ func init() {
 }
 
 type HostgwBackend struct {
-	sm       subnet.Manager
+	sm       *subnet2.KubeSubnetManager
 	extIface *backend.ExternalInterface
 }
 
-func New(sm subnet.Manager, extIface *backend.ExternalInterface) (backend.Backend, error) {
+func New(sm *subnet2.KubeSubnetManager, extIface *backend.ExternalInterface) (backend.Backend, error) {
 	if !extIface.ExtAddr.Equal(extIface.IfaceAddr) {
 		return nil, fmt.Errorf("your PublicIP differs from interface IP, meaning that probably you're on a NAT, which is not supported by host-gw backend")
 	}
@@ -50,7 +33,7 @@ func New(sm subnet.Manager, extIface *backend.ExternalInterface) (backend.Backen
 	return be, nil
 }
 
-func (be *HostgwBackend) RegisterNetwork(ctx context.Context, wg *sync.WaitGroup, config *subnet.Config) (backend.Network, error) {
+func (be *HostgwBackend) RegisterNetwork(ctx context.Context, wg *sync.WaitGroup, config *subnet2.Config) (backend.Network, error) {
 	n := &backend.RouteNetwork{
 		SimpleNetwork: backend.SimpleNetwork{
 			ExtIface: be.extIface,

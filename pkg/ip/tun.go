@@ -53,7 +53,7 @@ func OpenTun(name string) (*os.File, string, error) {
 	}
 
 	var ifr ifreqFlags
-	copy(ifr.IfrnName[:len(ifr.IfrnName)-1], []byte(name+"\000"))
+	copy(ifr.IfrnName[:len(ifr.IfrnName)-1], name+"\000")
 	ifr.IfruFlags = syscall.IFF_TUN | syscall.IFF_NO_PI
 
 	err = ioctl(int(tun.Fd()), syscall.TUNSETIFF, uintptr(unsafe.Pointer(&ifr)))

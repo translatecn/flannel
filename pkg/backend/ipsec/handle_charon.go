@@ -18,6 +18,7 @@ package ipsec
 
 import (
 	"fmt"
+	"github.com/flannel-io/flannel/pkg/over/lease"
 	"net"
 	"os"
 	"os/exec"
@@ -27,7 +28,6 @@ import (
 	"time"
 
 	"github.com/bronze1man/goStrongswanVici"
-	"github.com/flannel-io/flannel/pkg/lease"
 	"golang.org/x/net/context"
 	log "k8s.io/klog/v2"
 )

@@ -16,6 +16,8 @@ package extension
 
 import (
 	"fmt"
+	"github.com/flannel-io/flannel/pkg/over/lease"
+	subnet2 "github.com/flannel-io/flannel/pkg/over/subnet"
 	"io"
 	"os"
 	"strings"
@@ -26,8 +28,6 @@ import (
 
 	"github.com/flannel-io/flannel/pkg/backend"
 	"github.com/flannel-io/flannel/pkg/ip"
-	"github.com/flannel-io/flannel/pkg/lease"
-	"github.com/flannel-io/flannel/pkg/subnet"
 	"golang.org/x/net/context"
 	log "k8s.io/klog/v2"
 )
@@ -37,12 +37,12 @@ func init() {
 }
 
 type ExtensionBackend struct {
-	sm       subnet.Manager
+	sm       *subnet2.KubeSubnetManager
 	extIface *backend.ExternalInterface
 	networks map[string]*network
 }
 
-func New(sm subnet.Manager, extIface *backend.ExternalInterface) (backend.Backend, error) {
+func New(sm *subnet2.KubeSubnetManager, extIface *backend.ExternalInterface) (backend.Backend, error) {
 	be := &ExtensionBackend{
 		sm:       sm,
 		extIface: extIface,
@@ -56,7 +56,7 @@ func (_ *ExtensionBackend) Run(ctx context.Context) {
 	<-ctx.Done()
 }
 
-func (be *ExtensionBackend) RegisterNetwork(ctx context.Context, wg *sync.WaitGroup, config *subnet.Config) (backend.Network, error) {
+func (be *ExtensionBackend) RegisterNetwork(ctx context.Context, wg *sync.WaitGroup, config *subnet2.Config) (backend.Network, error) {
 	n := &network{
 		extIface: be.extIface,
 		sm:       be.sm,
@@ -79,7 +79,7 @@ func (be *ExtensionBackend) RegisterNetwork(ctx context.Context, wg *sync.WaitGr
 		n.subnetRemoveCommand = cfg.SubnetRemoveCommand
 	}
 
-	data := []byte{}
+	var data []byte
 	if len(n.preStartupCommand) > 0 {
 		cmd_output, err := runCmd([]string{}, "", "sh", "-c", n.preStartupCommand)
 		if err != nil {

@@ -19,10 +19,10 @@ package ipsec
 import (
 	"errors"
 	"fmt"
+	"github.com/flannel-io/flannel/pkg/over/lease"
 	"net"
 	"syscall"
 
-	"github.com/flannel-io/flannel/pkg/lease"
 	"github.com/vishvananda/netlink"
 	log "k8s.io/klog/v2"
 )

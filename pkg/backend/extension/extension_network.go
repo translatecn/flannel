@@ -16,6 +16,8 @@ package extension
 
 import (
 	"encoding/json"
+	"github.com/flannel-io/flannel/pkg/over/lease"
+	subnet2 "github.com/flannel-io/flannel/pkg/over/subnet"
 	"sync"
 
 	"golang.org/x/net/context"
@@ -23,15 +25,13 @@ import (
 	"fmt"
 
 	"github.com/flannel-io/flannel/pkg/backend"
-	"github.com/flannel-io/flannel/pkg/lease"
-	"github.com/flannel-io/flannel/pkg/subnet"
 	log "k8s.io/klog/v2"
 )
 
 type network struct {
 	extIface            *backend.ExternalInterface
 	lease               *lease.Lease
-	sm                  subnet.Manager
+	sm                  *subnet2.KubeSubnetManager
 	preStartupCommand   string
 	postStartupCommand  string
 	subnetAddCommand    string
@@ -53,7 +53,7 @@ func (n *network) Run(ctx context.Context) {
 	evts := make(chan []lease.Event)
 	wg.Add(1)
 	go func() {
-		subnet.WatchLeases(ctx, n.sm, n.lease, evts)
+		subnet2.WatchLeases(ctx, n.sm, n.lease, evts)
 		wg.Done()
 	}()
 

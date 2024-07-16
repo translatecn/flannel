@@ -1,30 +1,14 @@
-// Copyright 2017 flannel authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//go:build !windows
-// +build !windows
-
 package ipsec
 
 import (
 	"fmt"
+	"github.com/flannel-io/flannel/pkg/over/lease"
+	subnet2 "github.com/flannel-io/flannel/pkg/over/subnet"
 	"net"
 	"strconv"
 	"sync"
 
 	"github.com/flannel-io/flannel/pkg/backend"
-	"github.com/flannel-io/flannel/pkg/lease"
-	"github.com/flannel-io/flannel/pkg/subnet"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/context"
 	log "k8s.io/klog/v2"
@@ -51,11 +35,11 @@ type network struct {
 	backend.SimpleNetwork
 	password string
 	UDPEncap bool
-	sm       subnet.Manager
+	sm       *subnet2.KubeSubnetManager
 	iked     *CharonIKEDaemon
 }
 
-func newNetwork(sm subnet.Manager, extIface *backend.ExternalInterface,
+func newNetwork(sm *subnet2.KubeSubnetManager, extIface *backend.ExternalInterface,
 	UDPEncap bool, password string, ikeDaemon *CharonIKEDaemon,
 	l *lease.Lease) (*network, error) {
 	n := &network{
@@ -89,7 +73,7 @@ func (n *network) Run(ctx context.Context) {
 
 	wg.Add(1)
 	go func() {
-		subnet.WatchLeases(ctx, n.sm, n.SubnetLease, evts)
+		subnet2.WatchLeases(ctx, n.sm, n.SubnetLease, evts)
 		log.Info("WatchLeases exited")
 		wg.Done()
 	}()

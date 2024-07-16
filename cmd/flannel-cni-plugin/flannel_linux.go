@@ -29,6 +29,31 @@ import (
 	"github.com/containernetworking/cni/pkg/types"
 )
 
+func doCmdDel(args *skel.CmdArgs, n *NetConf) error {
+	cleanup, netConfBytes, err := consumeScratchNetConf(args.ContainerID, n.DataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Per spec should ignore error if resources are missing / already removed
+			return nil
+		}
+		return err
+	}
+
+	// cleanup will work when no error happens
+	defer func() {
+		cleanup(err)
+	}()
+
+	nc := &types.NetConf{}
+	if err = json.Unmarshal(netConfBytes, nc); err != nil {
+		// Interface will remain in the bridge but will be removed when rebooting the node
+		fmt.Fprintf(os.Stderr, "failed to parse netconf: %v", err)
+		return nil
+	}
+
+	return invoke.DelegateDel(context.TODO(), nc.Type, netConfBytes, nil)
+}
+
 // Return IPAM section for Delegate using input IPAM if present and replacing
 // or complementing as needed.
 func getDelegateIPAM(n *NetConf, fenv *subnetEnv) (map[string]interface{}, error) {
@@ -116,29 +141,4 @@ func doCmdAdd(args *skel.CmdArgs, n *NetConf, fenv *subnetEnv) error {
 	fmt.Fprintf(os.Stderr, "\n%#v\n", n.Delegate)
 
 	return delegateAdd(args.ContainerID, n.DataDir, n.Delegate)
-}
-
-func doCmdDel(args *skel.CmdArgs, n *NetConf) error {
-	cleanup, netConfBytes, err := consumeScratchNetConf(args.ContainerID, n.DataDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Per spec should ignore error if resources are missing / already removed
-			return nil
-		}
-		return err
-	}
-
-	// cleanup will work when no error happens
-	defer func() {
-		cleanup(err)
-	}()
-
-	nc := &types.NetConf{}
-	if err = json.Unmarshal(netConfBytes, nc); err != nil {
-		// Interface will remain in the bridge but will be removed when rebooting the node
-		fmt.Fprintf(os.Stderr, "failed to parse netconf: %v", err)
-		return nil
-	}
-
-	return invoke.DelegateDel(context.TODO(), nc.Type, netConfBytes, nil)
 }

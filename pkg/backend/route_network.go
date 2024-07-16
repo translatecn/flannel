@@ -19,12 +19,12 @@ package backend
 
 import (
 	"bytes"
+	"github.com/flannel-io/flannel/pkg/over/lease"
+	subnet2 "github.com/flannel-io/flannel/pkg/over/subnet"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/flannel-io/flannel/pkg/lease"
-	"github.com/flannel-io/flannel/pkg/subnet"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/context"
 	log "k8s.io/klog/v2"
@@ -39,7 +39,7 @@ type RouteNetwork struct {
 	BackendType string
 	routes      []netlink.Route
 	v6Routes    []netlink.Route
-	SM          subnet.Manager
+	SM          *subnet2.KubeSubnetManager
 	GetRoute    func(lease *lease.Lease) *netlink.Route
 	GetV6Route  func(lease *lease.Lease) *netlink.Route
 	Mtu         int
@@ -57,7 +57,7 @@ func (n *RouteNetwork) Run(ctx context.Context) {
 	evts := make(chan []lease.Event)
 	wg.Add(1)
 	go func() {
-		subnet.WatchLeases(ctx, n.SM, n.SubnetLease, evts)
+		subnet2.WatchLeases(ctx, n.SM, n.SubnetLease, evts)
 		wg.Done()
 	}()
 
